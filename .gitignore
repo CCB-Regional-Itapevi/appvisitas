@@ -1,0 +1,8 @@
+
+# Credenciais locais: nunca versionar
+.env
+.env.*
+!.env.example
+node_modules/
+.venv/
+.vercel/

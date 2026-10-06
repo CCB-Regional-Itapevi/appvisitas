@@ -5,49 +5,20 @@ const path = require("path");
 const crypto = require("crypto");
 const { URL } = require("url");
 
-const rootDir = process.cwd();
+const rootDir = path.resolve(__dirname, "..");
 const publicDir = path.join(rootDir, "public");
 const dataDir = path.join(rootDir, "data");
 const dataFile = path.join(dataDir, "cadastros.ndjson");
-const envFile = path.join(rootDir, ".env");
-
-if (fs.existsSync(envFile)) {
-  const envLines = fs.readFileSync(envFile, "utf-8").split(/\r?\n/);
-  for (const line of envLines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-
-    const eqIndex = trimmed.indexOf("=");
-    if (eqIndex < 0) continue;
-
-    const key = trimmed.slice(0, eqIndex).trim();
-    let value = trimmed.slice(eqIndex + 1).trim();
-    if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
-}
+const { loadEnvironment, getSupabaseConfig, supabaseHeaders } = require("./supabase-config");
+loadEnvironment(rootDir);
+const supabaseConfig = getSupabaseConfig();
 
 const PORT = Number(process.env.PORT || 3000);
-const WEBHOOK_CRIANCA = process.env.WEBHOOK_CRIANCA || "";
-const WEBHOOK_MONITOR = process.env.WEBHOOK_MONITOR || "";
-const WEBHOOK_CADASTRO = process.env.WEBHOOK_CADASTRO || "https://webhooks.rendamais.com.br/webhook/304a56e6-8f63-4b8c-9798-3e0a35f6be70-musicalizacao-infiantil";
-let SUPABASE_URL = process.env.SUPABASE_URL || "";
-let SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
-let SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const SUPABASE_URL = supabaseConfig.url;
+const SUPABASE_ANON_KEY = supabaseConfig.publishableKey;
+const SUPABASE_SERVICE_ROLE_KEY = supabaseConfig.secretKey;
 
-// Auto-correção dinâmica para alinhar com a base unificada de todas as aplicações
-if (!SUPABASE_URL || !SUPABASE_URL.includes("sqamxlhfazulrisiptud")) {
-  SUPABASE_URL = "https://sqamxlhfazulrisiptud.supabase.co";
-  SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNxYW14bGhmYXp1bHJpc2lwdHVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNzU4ODQsImV4cCI6MjA4Mjk1MTg4NH0.UmshkDqIgJQYVMmWVVgmfQm-YacUbRBeSpmYsNG0baE";
-  SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNxYW14bGhmYXp1bHJpc2lwdHVkIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NzM3NTg4NCwiZXhwIjoyMDgyOTUxODg0fQ.w92yMKGGh5-ewRq0q6Pdl8TstzGlx0sGms1FCRveDYc";
-}
-
-// Propagar as chaves unificadas de volta ao process.env para que todos os handlers internos as acessem
+// Compatibility for existing internal handlers; credentials come only from the environment.
 process.env.SUPABASE_URL = SUPABASE_URL;
 process.env.SUPABASE_ANON_KEY = SUPABASE_ANON_KEY;
 process.env.SUPABASE_SERVICE_ROLE_KEY = SUPABASE_SERVICE_ROLE_KEY;
@@ -230,7 +201,7 @@ async function getUserProfile(userId, email = null) {
       // 1. Tenta buscar por 'id'
       const urlId = new URL(`${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${table}?id=eq.${userId}&select=*`);
       const resId = await fetch(urlId, {
-        headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` }
+        headers: { ...supabaseHeaders(SUPABASE_SERVICE_ROLE_KEY) }
       });
       if (resId.ok) {
         const dataId = await resId.json();
@@ -240,7 +211,7 @@ async function getUserProfile(userId, email = null) {
       // 2. Tenta buscar por 'user_id'
       const urlUserId = new URL(`${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${table}?user_id=eq.${userId}&select=*`);
       const resUserId = await fetch(urlUserId, {
-        headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` }
+        headers: { ...supabaseHeaders(SUPABASE_SERVICE_ROLE_KEY) }
       });
       if (resUserId.ok) {
         const dataUserId = await resUserId.json();
@@ -251,7 +222,7 @@ async function getUserProfile(userId, email = null) {
       if (email) {
         const urlEmail = new URL(`${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${table}?email=eq.${email}&select=*`);
         const resEmail = await fetch(urlEmail, {
-          headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` }
+          headers: { ...supabaseHeaders(SUPABASE_SERVICE_ROLE_KEY) }
         });
         if (resEmail.ok) {
           const dataEmail = await resEmail.json();
@@ -309,228 +280,6 @@ function formatDateTimeBR(value) {
   };
 }
 
-function buildDuplicateDetails(tipo, entry) {
-  const existing = entry?.payload || {};
-  const isMonitor = tipo === "monitor";
-  const nome = isMonitor ? existing.nome_completo : existing.nome_crianca;
-  const polo = isMonitor ? existing.polo_auxilio : existing.polo_participacao;
-  const comum = existing.comum_congregacao || "";
-  const createdAt = entry?.createdAt || existing.created_at || existing.createdAt || "";
-  const { date, time } = formatDateTimeBR(createdAt);
-
-  return {
-    tipo,
-    nome: String(nome || "").trim() || "Cadastro",
-    comum: String(comum || "").trim() || "Comum nÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â£o informada",
-    polo: String(polo || "").trim() || "Polo nÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â£o informado",
-    date,
-    time
-  };
-}
-
-async function readSavedEntries() {
-  const localEntries = await readLocalEntries();
-
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    if (REQUIRE_SUPABASE_DUPLICATE_CHECK) {
-      throw new Error("supabase_duplicate_check_not_configured");
-    }
-    return localEntries;
-  }
-
-  const table = SUPABASE_TABLE_CADASTROS || "";
-  const endpoints = table
-    ? [{ table, select: "id,registro_uuid,tipo,payload,created_at" }]
-    : [
-        { table: SUPABASE_TABLE_CRIANCA, select: "*" },
-        { table: SUPABASE_TABLE_MONITOR, select: "*" }
-      ];
-
-  const allEntries = [];
-  for (const endpoint of endpoints) {
-    const url = new URL(`${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${endpoint.table}`);
-    url.searchParams.set("select", endpoint.select);
-    url.searchParams.set("limit", "1000");
-
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        apikey: SUPABASE_SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-      }
-    });
-
-    if (!response.ok) {
-      const bodyText = await response.text();
-      throw new Error(`supabase_duplicate_check_failed:${response.status}:${bodyText}`);
-    }
-
-    const rows = await response.json();
-    for (const row of rows) {
-      if (row && typeof row === "object" && row.payload && row.tipo) {
-        allEntries.push({
-          id: row.registro_uuid || row.id || "",
-          tipo: row.tipo,
-          payload: row.payload,
-          createdAt: row.created_at || row.createdAt || ""
-        });
-        continue;
-      }
-
-      const inferredType = endpoint.table === SUPABASE_TABLE_MONITOR ? "monitor" : "crianca";
-      allEntries.push({
-        id: row.registro_uuid || row.id || "",
-        tipo: inferredType,
-        payload: row,
-        createdAt: row.created_at || row.createdAt || ""
-      });
-    }
-  }
-
-  const deduped = new Map();
-  for (const entry of [...allEntries, ...localEntries]) {
-    const key = `${entry.tipo}::${entry.id}::${JSON.stringify(entry.payload || {})}`;
-    if (!deduped.has(key)) deduped.set(key, entry);
-  }
-
-  return [...deduped.values()];
-}
-
-function detectDuplicate(tipo, payload, entries) {
-  const sameTypeEntries = entries.filter((entry) => entry.tipo === tipo);
-  const congregation = normalizeText(payload.comum_congregacao);
-
-  for (const entry of sameTypeEntries) {
-    const existing = entry.payload || {};
-    const existingCongregation = normalizeText(existing.comum_congregacao);
-
-    if (tipo === "monitor") {
-      const email = normalizeText(payload.email);
-      const existingEmail = normalizeText(existing.email);
-      const phone = onlyDigits(payload.celular);
-      const existingPhone = onlyDigits(existing.celular);
-      const sameName = namesLookSame(payload.nome_completo, existing.nome_completo);
-
-      if (email && existingEmail && email === existingEmail) {
-        return { duplicate: true, matchedId: entry.id, reason: "email", matchedEntry: entry };
-      }
-
-      if (phone && existingPhone && phone === existingPhone) {
-        return { duplicate: true, matchedId: entry.id, reason: "celular", matchedEntry: entry };
-      }
-
-      if (sameName && congregation && congregation === existingCongregation) {
-        return { duplicate: true, matchedId: entry.id, reason: "nome_e_comum", matchedEntry: entry };
-      }
-    }
-
-    if (tipo === "crianca") {
-      const childNameMatch = namesLookSame(payload.nome_crianca, existing.nome_crianca);
-      const fatherNameMatch = namesLookSame(payload.nome_pai, existing.nome_pai);
-      const motherNameMatch = namesLookSame(payload.nome_mae, existing.nome_mae);
-      const guardianNameMatch = namesLookSame(payload.nome_responsavel, existing.nome_responsavel);
-      const birthDate = normalizeDate(payload.data_nascimento);
-      const existingBirthDate = normalizeDate(existing.data_nascimento);
-      const phone = onlyDigits(payload.celular_responsavel);
-      const existingPhone = onlyDigits(existing.celular_responsavel);
-
-      const sameCongregation = congregation && congregation === existingCongregation;
-      const samePhone = phone && existingPhone && phone === existingPhone;
-      const sameBirthDate = birthDate && existingBirthDate && birthDate === existingBirthDate;
-
-      if (samePhone && sameCongregation && (childNameMatch || guardianNameMatch || fatherNameMatch || motherNameMatch)) {
-        return { duplicate: true, matchedId: entry.id, reason: "telefone_comum_nome", matchedEntry: entry };
-      }
-
-      if (sameBirthDate && sameCongregation && (childNameMatch || (fatherNameMatch && motherNameMatch))) {
-        return { duplicate: true, matchedId: entry.id, reason: "nascimento_comum_nome", matchedEntry: entry };
-      }
-
-      if (sameCongregation && childNameMatch && guardianNameMatch) {
-        return { duplicate: true, matchedId: entry.id, reason: "nome_crianca_responsavel", matchedEntry: entry };
-      }
-    }
-  }
-
-  return { duplicate: false };
-}
-
-async function forwardToWebhook(tipo, payload, metadata = {}) {
-  const webhookByType = tipo === "crianca" ? WEBHOOK_CRIANCA : WEBHOOK_MONITOR;
-  const webhookFallback = WEBHOOK_CADASTRO;
-  const webhookCandidates = [];
-  if (webhookByType) webhookCandidates.push({ url: webhookByType, source: "type" });
-  if (webhookFallback && webhookFallback !== webhookByType) webhookCandidates.push({ url: webhookFallback, source: "fallback" });
-  if (webhookCandidates.length === 0) return { forwarded: false, webhookStatus: 0, webhookErrorBody: "No webhook configured." };
-
-  const normalizedPayload = toUppercaseDeep(payload);
-  const webhookUuid = metadata.uuid || "";
-  const webhookPayload = {
-    ...normalizedPayload,
-    tipo: String(tipo || "").toUpperCase(),
-    tipo_original: tipo,
-    id: webhookUuid,
-    uuid: webhookUuid,
-    registro_uuid: metadata.uuid || "",
-    created_at: metadata.createdAt || new Date().toISOString()
-  };
-
-  // Compatibilidade com planilhas/workflows que usam nomes de campo diferentes para polo.
-  const poloCrianca = webhookPayload.polo_participacao || webhookPayload.polo || webhookPayload.polo_auxilio || "";
-  const poloMonitor = webhookPayload.polo_auxilio || webhookPayload.polo || webhookPayload.polo_participacao || "";
-  if (tipo === "crianca") {
-    webhookPayload.polo_participacao = poloCrianca;
-    webhookPayload.polo_auxilio = webhookPayload.polo_auxilio || poloCrianca;
-    webhookPayload.polo = poloCrianca;
-  } else {
-    webhookPayload.polo_auxilio = poloMonitor;
-    webhookPayload.polo_participacao = webhookPayload.polo_participacao || poloMonitor;
-    webhookPayload.polo = poloMonitor;
-  }
-
-  let lastFailure = { webhookStatus: 0, webhookErrorBody: "", webhookUrl: "", webhookSource: "" };
-
-  for (const candidate of webhookCandidates) {
-    const response = await fetch(candidate.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(webhookPayload)
-    });
-
-    if (response.ok) {
-      return {
-        forwarded: true,
-        webhookStatus: response.status,
-        webhookUrl: candidate.url,
-        webhookSource: candidate.source
-      };
-    }
-
-    const errorBody = await response.text().catch(() => "");
-    lastFailure = {
-      webhookStatus: response.status,
-      webhookErrorBody: String(errorBody || "").slice(0, 500),
-      webhookUrl: candidate.url,
-      webhookSource: candidate.source
-    };
-  }
-
-  return { forwarded: false, ...lastFailure };
-}
-
-function validateRequired(tipo, payload) {
-  const requiredByType = {
-    crianca: ["nome_crianca", "sexo", "data_nascimento", "comum_congregacao", "polo_participacao", "nome_responsavel", "celular_responsavel"],
-    monitor: ["nome_completo", "comum_congregacao", "idade", "celular", "email", "polo_auxilio"]
-  };
-
-  const required = requiredByType[tipo] || [];
-  return required.filter((field) => {
-    const value = payload[field];
-    return value === undefined || value === null || String(value).trim() === "";
-  });
-}
-
 async function serveStatic(reqPath, res) {
   const normalized = path.normalize(reqPath).replace(/^([.][.][/\\])+/, "");
   const filePath = path.join(publicDir, normalized);
@@ -544,12 +293,12 @@ async function serveStatic(reqPath, res) {
   try {
     stat = await fsp.stat(filePath);
   } catch {
-    sendJson(res, 404, { error: "Arquivo nÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â£o encontrado." });
+    sendJson(res, 404, { error: "Arquivo não encontrado." });
     return;
   }
 
   if (stat.isDirectory()) {
-    sendJson(res, 404, { error: "Arquivo nÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â£o encontrado." });
+    sendJson(res, 404, { error: "Arquivo não encontrado." });
     return;
   }
 
@@ -608,8 +357,7 @@ async function handleRequest(req, res) {
         const response = await fetch(upsertUrl, {
           method: "POST",
           headers: {
-            apikey: SUPABASE_SERVICE_ROLE_KEY,
-            Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            ...supabaseHeaders(SUPABASE_SERVICE_ROLE_KEY),
             "Content-Type": "application/json",
             Prefer: "resolution=merge-duplicates"
           },
@@ -664,7 +412,7 @@ async function handleRequest(req, res) {
         const supabaseUrl = process.env.SUPABASE_URL;
         const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
         if (!supabaseUrl || !supabaseKey) {
-          return sendJson(res, 500, { error: "ConfiguraÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â£o do Supabase ausente." });
+          return sendJson(res, 500, { error: "Configuração do Supabase ausente." });
         }
 
         const normalizeValue = (value) => String(value || "").trim();
@@ -679,10 +427,10 @@ async function handleRequest(req, res) {
         try {
           const response = await fetch(url, {
             headers: {
-              apikey: supabaseKey,
-              Authorization: `Bearer ${supabaseKey}`
+              ...supabaseHeaders(supabaseKey)
             }
           });
+          if (!response.ok) return sendJson(res, 502, { error: "Falha ao consultar comuns de Visitas." });
           const data = await response.json();
           const comuns = Array.isArray(data)
             ? data.map(normalizeComum).filter(Boolean).sort((a, b) => a.comum.localeCompare(b.comum, "pt-BR"))
@@ -693,7 +441,7 @@ async function handleRequest(req, res) {
         }
       }
 
-      sendJson(res, 404, { error: "Rota nÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â£o encontrada." });
+      sendJson(res, 404, { error: "Rota não encontrada." });
       return;
     }
 
@@ -720,8 +468,7 @@ async function handleRequest(req, res) {
 
         const statusResponse = await fetch(statusUrl, {
           headers: {
-            apikey: supabaseKey,
-            Authorization: `Bearer ${supabaseKey}`
+            ...supabaseHeaders(supabaseKey)
           }
         });
 
@@ -823,8 +570,7 @@ async function handleRequest(req, res) {
 
         const lookupResponse = await fetch(lookupUrl, {
           headers: {
-            apikey: supabaseKey,
-            Authorization: `Bearer ${supabaseKey}`
+            ...supabaseHeaders(supabaseKey)
           }
         });
 
@@ -850,12 +596,25 @@ async function handleRequest(req, res) {
           if (!camposSolicitados.includes(campo)) delete databasePayload[campo];
         });
 
+        databasePayload.referencia_mes = Number(payload.referencia_mes || payload.mes_referencia);
+        databasePayload.referencia_ano = Number(payload.referencia_ano || new Date().getFullYear());
+        if (!Number.isInteger(databasePayload.referencia_mes) || databasePayload.referencia_mes < 1 || databasePayload.referencia_mes > 12 || !Number.isInteger(databasePayload.referencia_ano)) {
+          return sendJson(res, 400, { error: "Mes ou ano de referencia invalido." });
+        }
+        databasePayload.total_visitas = camposPermitidos.reduce((sum, campo) => sum + Number(camposSolicitados.includes(campo) ? databasePayload[campo] : existing?.[campo] || 0), 0);
+        databasePayload.total = databasePayload.total_visitas;
+        databasePayload.updated_at = new Date().toISOString();
+        if (!existing) {
+          databasePayload.id = crypto.randomUUID();
+          databasePayload.created_at = databasePayload.updated_at;
+        }
+
         let method = "POST";
         const saveUrl = new URL(supabaseEndpoint);
         if (existing) {
           method = "PATCH";
           saveUrl.searchParams.set("id", `eq.${existing.id}`);
-          camposSolicitados.forEach((campo) => saveUrl.searchParams.set(campo, "eq.0"));
+          saveUrl.searchParams.set("and", `(${camposSolicitados.map(campo => `or(${campo}.eq.0,${campo}.is.null)`).join(",")})`);
 
           const total = camposPermitidos.reduce((sum, campo) => (
             sum + Number(camposSolicitados.includes(campo) ? databasePayload[campo] : existing[campo] || 0)
@@ -867,8 +626,7 @@ async function handleRequest(req, res) {
         const resSupabase = await fetch(saveUrl, {
           method,
           headers: {
-            apikey: supabaseKey,
-            Authorization: `Bearer ${supabaseKey}`,
+            ...supabaseHeaders(supabaseKey),
             "Content-Type": "application/json",
             Prefer: "return=representation"
           },
@@ -906,10 +664,10 @@ async function handleRequest(req, res) {
 
         const parsed = responseBody ? JSON.parse(responseBody) : [];
         saved = Array.isArray(parsed) ? parsed[0] : parsed;
-        if (existing && !saved) {
-          return sendJson(res, 409, {
-            code: "duplicate",
-            error: "Outra pessoa realizou este lancamento antes da conclusao do envio.",
+        if (!saved || !saved.id) {
+          return sendJson(res, existing ? 409 : 502, {
+            code: existing ? "duplicate" : "write_not_confirmed",
+            error: existing ? "Outra pessoa realizou este lancamento antes da conclusao do envio." : "O banco nao confirmou a gravacao. Atualize a pagina e tente novamente.",
             details: { comum: payload.comum, campos: camposSolicitados, existing }
           });
         }
@@ -929,83 +687,15 @@ async function handleRequest(req, res) {
       return;
     }
 
-    if (req.method === "POST" && (pathname === "/api/cadastros/crianca" || pathname === "/api/cadastros/monitor")) {
-      const tipo = pathname.endsWith("crianca") ? "crianca" : "monitor";
-      const rawPayload = await readJsonBody(req);
-      const payload = toUppercaseDeep(rawPayload);
-      const missing = validateRequired(tipo, payload);
-
-      if (missing.length > 0) {
-        sendJson(res, 400, { error: "Campos obrigatÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³rios ausentes.", missing });
-        return;
-      }
-
-      const existingEntries = await readSavedEntries();
-      const duplicateCheck = detectDuplicate(tipo, payload, existingEntries);
-      if (duplicateCheck.duplicate) {
-        const duplicate = buildDuplicateDetails(tipo, duplicateCheck.matchedEntry);
-        sendJson(res, 409, {
-          error: "Cadastro duplicado detectado.",
-          duplicateOf: duplicateCheck.matchedId,
-          duplicateReason: duplicateCheck.reason,
-          duplicate
-        });
-        return;
-      }
-
-      const saved = await saveSubmission(tipo, payload);
-      const webhookResult = await forwardToWebhook(tipo, payload, {
-        uuid: saved.id,
-        createdAt: saved.createdAt
-      });
-
-      if (!webhookResult.forwarded) {
-        console.error("webhook_forward_failed", {
-          tipo,
-          status: webhookResult.webhookStatus || 0,
-          source: webhookResult.webhookSource || "",
-          url: webhookResult.webhookUrl || "",
-          body: webhookResult.webhookErrorBody || ""
-        });
-        sendJson(res, 502, {
-          error: "Falha ao encaminhar cadastro para a integraÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â£o.",
-          webhookStatus: webhookResult.webhookStatus || 0,
-          webhookSource: webhookResult.webhookSource || "",
-          webhookUrl: webhookResult.webhookUrl || ""
-        });
-        return;
-      }
-
-      sendJson(res, 201, {
-        message: "Cadastro recebido com sucesso.",
-        id: saved.id,
-        uuid: saved.uuid,
-        createdAt: saved.createdAt,
-        persistedLocally: saved.persistedLocally,
-        ...webhookResult
-      });
-      return;
-    }
-
-    sendJson(res, 404, { error: "Rota nÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â£o encontrada." });
+    sendJson(res, 404, { error: "Rota não encontrada." });
   } catch (error) {
     if (error.message === "payload_too_large") {
       sendJson(res, 413, { error: "Payload excede 1MB." });
       return;
     }
 
-    if (typeof error.message === "string" && error.message.startsWith("supabase_duplicate_check_failed:")) {
-      sendJson(res, 502, { error: "Falha ao validar duplicidade no Supabase." });
-      return;
-    }
-
-    if (error.message === "supabase_duplicate_check_not_configured") {
-      sendJson(res, 500, { error: "ValidaÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â£o de duplicidade exige SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY." });
-      return;
-    }
-
     if (error instanceof SyntaxError) {
-      sendJson(res, 400, { error: "JSON invÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¡lido." });
+      sendJson(res, 400, { error: "JSON inválido." });
       return;
     }
 
